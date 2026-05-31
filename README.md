@@ -89,6 +89,16 @@ python main.py cost-approval --provider apify --action-type scrape --estimated-c
 These commands only record an approval decision. They never call or charge a
 provider.
 
+## Local Mandates And Existing Leads
+
+Persist parsed mandates and check local records before paid sourcing:
+
+```powershell
+python main.py save-mandate "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
+python main.py mandates
+python main.py existing-check "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
+```
+
 ## Safety rules
 
 - Never commit `.env` or real credentials.

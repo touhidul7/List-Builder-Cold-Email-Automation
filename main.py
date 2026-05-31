@@ -10,9 +10,11 @@ from typer.core import TyperOption
 
 from scripts.config import get_settings
 from scripts.cost_approval import CostApprovalRequest, process_cost_approval
+from scripts.check_existing_leads import check_existing_leads
 from scripts.db import count_rows, get_connection, get_local_db_path
 from scripts.icp_builder import build_icp
 from scripts.mandate_intake import parse_mandate
+from scripts.mandate_store import list_mandates, save_mandate
 from scripts.source_planner import build_source_plan
 
 
@@ -269,6 +271,60 @@ def cost_approval(
     console.print(result.approval_message)
     console.print(f"\nApproval status: {result.approval_status}")
     console.print(f"cost_approval_id: {result.cost_approval_id}")
+
+
+@app.command("save-mandate")
+def save_mandate_command(raw_prompt: str) -> None:
+    """Parse and persist a mandate in the local SQLite database."""
+    mandate = parse_mandate(raw_prompt)
+    mandate_id = save_mandate(mandate)
+    console.print(f"[bold]mandate_id[/bold]: {mandate_id}")
+    table = Table(title="Saved Mandate")
+    table.add_column("Field")
+    table.add_column("Value")
+    for field, value in mandate.model_dump().items():
+        table.add_row(field, str(value))
+    console.print(table)
+
+
+@app.command("mandates")
+def mandates_command() -> None:
+    """Show recently saved local mandates."""
+    table = Table(title="Recent Mandates")
+    for column in (
+        "ID",
+        "Mandate Name",
+        "Mandate Type",
+        "Industry",
+        "Geography",
+        "Lead Count",
+        "Status",
+    ):
+        table.add_column(column)
+    for mandate in list_mandates():
+        table.add_row(
+            mandate["id"][:8],
+            mandate["mandate_name"],
+            mandate["mandate_type"],
+            mandate["industry"],
+            mandate["geography"],
+            str(mandate["target_lead_count"]),
+            mandate["status"],
+        )
+    console.print(table)
+
+
+@app.command("existing-check")
+def existing_check(raw_prompt: str) -> None:
+    """Check local records before recommending paid lead sources."""
+    mandate = parse_mandate(raw_prompt)
+    summary = check_existing_leads(mandate.industry, mandate.geography)
+    table = Table(title="Existing Lead Check")
+    table.add_column("Field")
+    table.add_column("Value")
+    for field, value in summary.model_dump().items():
+        table.add_row(field, str(value))
+    console.print(table)
 
 
 @app.callback()
