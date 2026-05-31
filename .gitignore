@@ -16,4 +16,3 @@ data/exports/*
 !data/exports/.gitkeep
 .env.local
 .env
-.env.example
