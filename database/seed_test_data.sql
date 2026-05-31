@@ -1,12 +1,181 @@
--- Synthetic local test data only.
+-- Synthetic local test data only. All names, domains, IDs, and contact details are fake.
 
-INSERT OR IGNORE INTO mandates (id, client_name, objective)
-VALUES (1, 'Example Client', 'Build a synthetic QA lead list');
-
-INSERT OR IGNORE INTO leads (
-    company_name, domain, contact_name, email, source, fingerprint
+INSERT OR IGNORE INTO mandates (
+    id,
+    mandate_name,
+    mandate_type,
+    industry,
+    geography,
+    target_lead_count,
+    campaign_goal,
+    company_size,
+    target_titles,
+    exclusions,
+    budget_cap,
+    status
 ) VALUES (
-    'Example Company', 'example.test', 'Test Contact',
-    'test.contact@example.test', 'synthetic_seed', 'synthetic-example-company'
+    'mandate-ontario-cleaning-001',
+    'Ontario Commercial Cleaning Outreach',
+    'local_business',
+    'Commercial cleaning',
+    'Ontario, Canada',
+    100,
+    'Book discovery calls with commercial cleaning operators',
+    '10-100 employees',
+    'Owner, Founder, President, Operations Manager',
+    'Residential-only cleaning companies',
+    100,
+    'active'
 );
 
+INSERT OR IGNORE INTO companies (
+    id,
+    mandate_id,
+    company_name,
+    website,
+    root_domain,
+    industry,
+    city,
+    province,
+    country,
+    phone,
+    source,
+    source_url,
+    google_place_id,
+    source_fingerprint,
+    fit_score,
+    confidence_score,
+    priority_tier,
+    score_reason
+) VALUES
+(
+    'company-clearview-001',
+    'mandate-ontario-cleaning-001',
+    'Clearview Facility Care',
+    'https://clearviewfacility.example',
+    'clearviewfacility.example',
+    'Commercial cleaning',
+    'Toronto',
+    'Ontario',
+    'Canada',
+    '+1-416-555-0101',
+    'synthetic_seed',
+    'https://example.test/sources/clearview-facility-care',
+    'fake-place-clearview-001',
+    'synthetic-company-clearview-001',
+    88,
+    90,
+    'A',
+    'Strong commercial focus and target geography match'
+),
+(
+    'company-northstar-002',
+    'mandate-ontario-cleaning-001',
+    'Northstar Office Cleaning',
+    'https://northstaroffice.example',
+    'northstaroffice.example',
+    'Commercial cleaning',
+    'Ottawa',
+    'Ontario',
+    'Canada',
+    '+1-613-555-0102',
+    'synthetic_seed',
+    'https://example.test/sources/northstar-office-cleaning',
+    'fake-place-northstar-002',
+    'synthetic-company-northstar-002',
+    81,
+    85,
+    'A',
+    'Office-cleaning positioning and target geography match'
+),
+(
+    'company-lakeshore-003',
+    'mandate-ontario-cleaning-001',
+    'Lakeshore Janitorial Services',
+    'https://lakeshorejanitorial.example',
+    'lakeshorejanitorial.example',
+    'Commercial cleaning',
+    'Hamilton',
+    'Ontario',
+    'Canada',
+    '+1-905-555-0103',
+    'synthetic_seed',
+    'https://example.test/sources/lakeshore-janitorial-services',
+    'fake-place-lakeshore-003',
+    'synthetic-company-lakeshore-003',
+    74,
+    80,
+    'B',
+    'Commercial janitorial fit with less complete contact coverage'
+);
+
+INSERT OR IGNORE INTO contacts (
+    id,
+    company_id,
+    full_name,
+    title,
+    email,
+    email_status,
+    phone,
+    source,
+    verification_provider,
+    source_fingerprint,
+    last_verified_at,
+    last_enriched_at
+) VALUES
+(
+    'contact-maya-001',
+    'company-clearview-001',
+    'Maya Patel',
+    'Operations Manager',
+    'maya.patel@clearviewfacility.example',
+    'verified',
+    '+1-416-555-0111',
+    'synthetic_seed',
+    'synthetic_verifier',
+    'synthetic-contact-maya-001',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+),
+(
+    'contact-daniel-002',
+    'company-northstar-002',
+    'Daniel Mercer',
+    'President',
+    'daniel.mercer@northstaroffice.example',
+    'verified',
+    '+1-613-555-0112',
+    'synthetic_seed',
+    'synthetic_verifier',
+    'synthetic-contact-daniel-002',
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+);
+
+INSERT OR IGNORE INTO cost_approvals (
+    id,
+    mandate_id,
+    action_type,
+    action_description,
+    provider,
+    estimated_cost,
+    actual_cost,
+    estimated_credits,
+    approval_status,
+    approved_by,
+    approved_at,
+    notes
+) VALUES (
+    'approval-synthetic-apify-001',
+    'mandate-ontario-cleaning-001',
+    'lead_source_run',
+    'Synthetic approval for a future Ontario commercial-cleaning source run',
+    'apify',
+    25,
+    0,
+    100,
+    'approved',
+    'qa-reviewer@example.test',
+    CURRENT_TIMESTAMP,
+    'Synthetic test approval only. No external source run has occurred.'
+);
