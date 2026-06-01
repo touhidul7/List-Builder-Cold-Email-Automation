@@ -20,6 +20,11 @@ SUMMARY_TABLES = (
     "campaigns",
     "domains",
     "inboxes",
+    "source_runs",
+    "lead_scores",
+    "research_logs",
+    "email_sequences",
+    "campaign_leads",
 )
 console = Console()
 

@@ -12,10 +12,23 @@ from scripts.config import get_settings
 from scripts.cost_approval import CostApprovalRequest, process_cost_approval
 from scripts.check_existing_leads import check_existing_leads
 from scripts.db import count_rows, get_connection, get_local_db_path
+from scripts.dedupe_leads import (
+    dedupe_companies_preview,
+    find_duplicate_company,
+    update_company_fingerprints,
+)
 from scripts.icp_builder import build_icp
 from scripts.mandate_intake import parse_mandate
 from scripts.mandate_store import list_mandates, save_mandate
+from scripts.mock_email_enrichment import enrich_companies_without_contacts
+from scripts.score_leads import score_all_seed_companies, score_companies_for_mandate
+from scripts.run_apify_google_maps import run_apify_google_maps_mock
 from scripts.source_planner import build_source_plan
+from scripts.source_run_planner import (
+    PlannedSourceRun,
+    create_source_runs_for_mandate,
+    find_source_run_by_id_or_prefix,
+)
 
 
 def _apply_typer_click_compatibility() -> None:
@@ -25,6 +38,8 @@ def _apply_typer_click_compatibility() -> None:
     def option_init(self: TyperOption, *args: object, **kwargs: object) -> None:
         if kwargs.get("is_flag") is None and kwargs.get("flag_value") is None:
             kwargs["is_flag"] = False
+        elif kwargs.get("is_flag") is True and kwargs.get("flag_value") is None:
+            kwargs["flag_value"] = True
         original_option_init(self, *args, **kwargs)
 
     TyperOption.__init__ = option_init  # type: ignore[method-assign]
@@ -123,6 +138,11 @@ def db_status() -> None:
         "campaigns",
         "domains",
         "inboxes",
+        "source_runs",
+        "lead_scores",
+        "research_logs",
+        "email_sequences",
+        "campaign_leads",
     )
     table = Table(title="Local SQLite Summary")
     table.add_column("Table")
@@ -325,6 +345,286 @@ def existing_check(raw_prompt: str) -> None:
     for field, value in summary.model_dump().items():
         table.add_row(field, str(value))
     console.print(table)
+
+
+@app.command("score-leads")
+def score_leads_command(
+    mandate_id: str | None = typer.Option(
+        None, is_flag=False, help="Stored mandate ID. Defaults to the first local mandate."
+    ),
+) -> None:
+    """Score local companies and persist SOP score breakdowns."""
+    breakdowns = (
+        score_companies_for_mandate(mandate_id)
+        if mandate_id
+        else score_all_seed_companies()
+    )
+    table = Table(title="Lead Scores")
+    for column in (
+        "Company",
+        "Total",
+        "Tier",
+        "ICP",
+        "Geo",
+        "Contact",
+        "Email",
+        "Source",
+        "Reason",
+    ):
+        table.add_column(column)
+    for score in breakdowns:
+        table.add_row(
+            score.company_name,
+            str(score.total_score),
+            score.priority_tier,
+            str(score.icp_fit),
+            str(score.geography_fit),
+            str(score.contact_quality),
+            str(score.email_quality),
+            str(score.source_confidence),
+            score.score_reason,
+        )
+    console.print(table)
+
+
+@app.command("update-fingerprints")
+def update_fingerprints_command() -> None:
+    """Update local company root domains and stable fingerprints."""
+    updated = update_company_fingerprints()
+    console.print(f"Updated company fingerprints: {updated}")
+
+
+@app.command("dedupe-preview")
+def dedupe_preview_command() -> None:
+    """Show possible local duplicate groups without deleting records."""
+    groups = dedupe_companies_preview()
+    if not groups:
+        console.print("No possible duplicate company groups found.")
+        return
+    table = Table(title="Possible Duplicate Companies")
+    for column in ("Type", "Value", "Company IDs", "Company Names"):
+        table.add_column(column)
+    for group in groups:
+        table.add_row(
+            group["duplicate_type"],
+            group["value"],
+            ", ".join(group["company_ids"]),
+            ", ".join(group["company_names"]),
+        )
+    console.print(table)
+
+
+@app.command("duplicate-check")
+def duplicate_check_command(
+    company_name: str | None = typer.Option(None, is_flag=False),
+    website: str | None = typer.Option(None, is_flag=False),
+    root_domain: str | None = typer.Option(None, is_flag=False),
+    city: str | None = typer.Option(None, is_flag=False),
+    province: str | None = typer.Option(None, is_flag=False),
+    phone: str | None = typer.Option(None, is_flag=False),
+    google_place_id: str | None = typer.Option(None, is_flag=False),
+    apollo_company_id: str | None = typer.Option(None, is_flag=False),
+    consulti_company_id: str | None = typer.Option(None, is_flag=False),
+    source_url: str | None = typer.Option(None, is_flag=False),
+) -> None:
+    """Check a proposed company against local records without creating it."""
+    result = find_duplicate_company(
+        company_name=company_name,
+        website=website,
+        root_domain=root_domain,
+        city=city,
+        province=province,
+        phone=phone,
+        google_place_id=google_place_id,
+        apollo_company_id=apollo_company_id,
+        consulti_company_id=consulti_company_id,
+        source_url=source_url,
+    )
+    console.print(f"Duplicate exists: {result.is_duplicate}")
+    console.print(f"Recommended action: {result.recommended_action}")
+    table = Table(title="Duplicate Matches")
+    for column in ("Existing ID", "Type", "Confidence", "Reason"):
+        table.add_column(column)
+    for match in result.matches:
+        table.add_row(
+            match.existing_id,
+            match.duplicate_type,
+            match.confidence,
+            match.reason,
+        )
+    console.print(table)
+
+
+def _print_planned_source_runs(runs: list[PlannedSourceRun]) -> None:
+    """Print persisted source-run plans in a compact table."""
+    table = Table(title="Planned Source Runs")
+    for column in (
+        "Run ID",
+        "Provider",
+        "Source Type",
+        "Query",
+        "Status",
+        "Est. Cost",
+        "Approval",
+        "Approval ID",
+    ):
+        table.add_column(column)
+    for run in runs:
+        table.add_row(
+            run.source_run_id[:8],
+            run.provider,
+            run.source_type,
+            run.query,
+            run.status,
+            f"${run.estimated_cost:.2f}" if run.estimated_cost is not None else "-",
+            run.approval_status or "-",
+            run.cost_approval_id[:8] if run.cost_approval_id else "-",
+        )
+    console.print(table)
+
+
+@app.command("plan-runs")
+def plan_runs_command(
+    mandate_id: str,
+    no_approvals: bool = typer.Option(
+        False,
+        "--no-approvals",
+        help="Create source runs without pending cost-approval records.",
+    ),
+) -> None:
+    """Persist source-run plans without calling external providers."""
+    runs = create_source_runs_for_mandate(
+        mandate_id,
+        auto_create_approvals=not no_approvals,
+    )
+    _print_planned_source_runs(runs)
+    console.print("No external APIs were called. These are planned runs only.")
+
+
+@app.command("create-mandate-plan")
+def create_mandate_plan_command(raw_prompt: str) -> None:
+    """Persist a mandate, inspect local leads, and create source-run plans."""
+    mandate = parse_mandate(raw_prompt)
+    mandate_id = save_mandate(mandate)
+    summary = check_existing_leads(
+        mandate.industry,
+        mandate.geography,
+        mandate_id=mandate_id,
+    )
+    runs = create_source_runs_for_mandate(mandate_id)
+    console.print(f"[bold]mandate_id[/bold]: {mandate_id}")
+    summary_table = Table(title="Existing Lead Summary")
+    summary_table.add_column("Field")
+    summary_table.add_column("Value")
+    for field, value in summary.model_dump().items():
+        summary_table.add_row(field, str(value))
+    console.print(summary_table)
+    _print_planned_source_runs(runs)
+    console.print("No external APIs were called. These are planned runs only.")
+
+
+@app.command("source-runs")
+def source_runs_command(
+    mandate_id: str | None = typer.Option(None, is_flag=False),
+) -> None:
+    """List local source-run plans and mock-run outcomes."""
+    query = "SELECT * FROM source_runs"
+    parameters: tuple[str, ...] = ()
+    if mandate_id:
+        query += " WHERE mandate_id = ?"
+        parameters = (mandate_id,)
+    query += " ORDER BY created_at DESC, rowid DESC"
+    with get_connection() as connection:
+        runs = [dict(row) for row in connection.execute(query, parameters).fetchall()]
+    table = Table(title="Source Runs")
+    table.add_column("Run ID", width=8, no_wrap=True)
+    table.add_column("Mandate", width=8, no_wrap=True)
+    for column in (
+        "Provider",
+        "Source Type",
+        "Query",
+        "Status",
+        "Est. Cost",
+        "Found",
+        "Imported",
+    ):
+        table.add_column(column)
+    for run in runs:
+        table.add_row(
+            run["id"][:8],
+            run["mandate_id"][:8],
+            run["provider"],
+            run["source_type"],
+            run["query"],
+            run["status"],
+            f"${run['estimated_cost']:.2f}" if run["estimated_cost"] is not None else "-",
+            str(run["records_found"]),
+            str(run["records_imported"]),
+        )
+    console.print(table)
+    console.print("You can use the short Run ID prefix with run-google-maps-mock.")
+
+
+@app.command("run-google-maps-mock")
+def run_google_maps_mock_command(
+    source_run_id: str,
+    limit: int = typer.Option(25, is_flag=False),
+) -> None:
+    """Execute one planned Google Maps run using synthetic leads only."""
+    try:
+        source_run = find_source_run_by_id_or_prefix(source_run_id)
+    except ValueError as error:
+        console.print(f"[red]{error}[/red]")
+        raise typer.Exit(code=1) from error
+    if source_run is None:
+        console.print("[red]Source run not found. Run: python main.py source-runs[/red]")
+        raise typer.Exit(code=1)
+    source_identity = f"{source_run['provider']} {source_run['source_type']}".lower()
+    if "apify" not in source_identity or "maps" not in source_identity:
+        console.print("[red]Source run is not an Apify Google Maps plan.[/red]")
+        raise typer.Exit(code=1)
+    safe_statuses = {"approved", "planned", "approval_required", "completed_mock"}
+    if source_run["status"] not in safe_statuses:
+        console.print(
+            f"[red]Source run status is not safe for mock execution: "
+            f"{source_run['status']}[/red]"
+        )
+        raise typer.Exit(code=1)
+    summary = run_apify_google_maps_mock(
+        source_run["mandate_id"],
+        source_run["id"],
+        source_run["query"],
+        limit=limit,
+    )
+    table = Table(title="Google Maps Mock Run")
+    table.add_column("Field")
+    table.add_column("Value")
+    for field, value in summary.items():
+        table.add_row(field, str(value))
+    console.print(table)
+    console.print("DRY RUN ONLY: No real Apify API call was made.")
+
+
+@app.command("mock-enrich")
+def mock_enrich_command(
+    mandate_id: str | None = typer.Option(None, is_flag=False),
+    limit: int = typer.Option(25, is_flag=False),
+) -> None:
+    """Generate synthetic contacts for companies lacking contacts."""
+    contacts = enrich_companies_without_contacts(mandate_id=mandate_id, limit=limit)
+    table = Table(title="Mock Email Enrichment")
+    for column in ("Company", "Contact", "Title", "Email", "Email Status"):
+        table.add_column(column)
+    for contact in contacts:
+        table.add_row(
+            contact.company_name,
+            contact.full_name or "-",
+            contact.title or "-",
+            contact.email or "-",
+            contact.email_status,
+        )
+    console.print(table)
+    console.print("DRY RUN ONLY: No real enrichment API was called.")
 
 
 @app.callback()

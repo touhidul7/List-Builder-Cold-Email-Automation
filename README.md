@@ -99,6 +99,63 @@ python main.py mandates
 python main.py existing-check "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
 ```
 
+## Lead Scoring
+
+Score local companies using the SOP scoring model:
+
+```powershell
+python main.py score-leads
+python main.py score-leads --mandate-id YOUR_MANDATE_ID
+```
+
+## Lead Deduplication
+
+Update fingerprints and preview possible local duplicates without deleting records:
+
+```powershell
+python main.py update-fingerprints
+python main.py dedupe-preview
+python main.py duplicate-check --company-name "ABC Cleaning" --website "https://abccleaning.ca" --city "Toronto" --phone "416-555-1234"
+```
+
+## Source Run Planner
+
+Persist source-run plans and pending cost approvals without calling providers:
+
+```powershell
+python main.py save-mandate "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
+python main.py mandates
+python main.py plan-runs YOUR_MANDATE_ID
+python main.py create-mandate-plan "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
+python main.py db-status
+```
+
+## Google Maps Mock Runner
+
+Generate and store synthetic Google Maps leads without calling Apify:
+
+```powershell
+python -m scripts.init_db --reset --seed
+python main.py create-mandate-plan "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
+python main.py source-runs
+python main.py run-google-maps-mock SOURCE_RUN_ID
+python main.py mock-enrich
+python main.py db-status
+python main.py score-leads
+```
+
+## Mock Email Enrichment
+
+Create synthetic contacts for companies that do not have contacts yet:
+
+```powershell
+python main.py mock-enrich
+python main.py mock-enrich --mandate-id YOUR_MANDATE_ID --limit 25
+```
+
+This command only inserts fake local contacts. It never calls Hunter, Consulti,
+or another external enrichment provider.
+
 ## Safety rules
 
 - Never commit `.env` or real credentials.
