@@ -24,6 +24,8 @@ class Settings(BaseModel):
     smartlead_api_key: str = ""
     winnr_api_key: str = ""
     winnr_account_email: str = ""
+    real_api_confirmation: str = ""
+    apify_google_maps_task_id: str = ""
 
 
 def get_settings() -> Settings:
@@ -45,4 +47,6 @@ def get_settings() -> Settings:
         smartlead_api_key=os.getenv("SMARTLEAD_API_KEY", ""),
         winnr_api_key=os.getenv("WINNR_API_KEY", ""),
         winnr_account_email=os.getenv("WINNR_ACCOUNT_EMAIL", ""),
+        real_api_confirmation=os.getenv("REAL_API_CONFIRMATION", ""),
+        apify_google_maps_task_id=os.getenv("APIFY_GOOGLE_MAPS_TASK_ID", ""),
     )

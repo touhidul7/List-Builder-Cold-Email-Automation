@@ -23,6 +23,7 @@ SUMMARY_TABLES = (
     "source_runs",
     "lead_scores",
     "research_logs",
+    "personalization",
     "email_sequences",
     "campaign_leads",
 )

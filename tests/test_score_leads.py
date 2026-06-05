@@ -1,12 +1,42 @@
 """Tests for the deterministic SOP lead scoring engine."""
 
+from pathlib import Path
+import sqlite3
+
 import pytest
 
+from scripts import db
+from scripts.mandate_intake import parse_mandate
+from scripts.mandate_store import save_mandate
+from scripts.mock_email_enrichment import enrich_companies_without_contacts
+from scripts.mock_email_verification import verify_contacts_mock
+from scripts.run_apify_google_maps import run_apify_google_maps_mock
 from scripts.score_leads import (
     calculate_company_score,
+    get_latest_active_mandate_id,
     get_priority_tier,
     is_blocked_or_low_quality_source,
+    score_all_companies,
 )
+from scripts.source_run_planner import create_source_runs_for_mandate
+
+
+@pytest.fixture
+def local_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    db_path = tmp_path / "score-leads.db"
+    monkeypatch.setattr(db, "LOCAL_DB_PATH", db_path)
+    project_root = Path(__file__).resolve().parents[1]
+    connection = sqlite3.connect(db_path)
+    connection.execute("PRAGMA foreign_keys = ON")
+    connection.executescript(
+        (project_root / "database" / "schema.sql").read_text(encoding="utf-8")
+    )
+    connection.executescript(
+        (project_root / "database" / "seed_test_data.sql").read_text(encoding="utf-8")
+    )
+    connection.commit()
+    connection.close()
+    return db_path
 
 
 @pytest.mark.parametrize(
@@ -93,3 +123,39 @@ def test_total_equals_component_sum_and_is_capped() -> None:
     )
     assert breakdown.total_score == component_total
     assert breakdown.total_score <= 100
+
+
+def test_latest_mandate_scores_imported_mock_google_maps_companies(local_db: Path) -> None:
+    mandate_id = save_mandate(
+        parse_mandate(
+            "Find 25 acquisition targets for a client who wants to buy a commercial cleaning company in Ontario."
+        )
+    )
+    runs = create_source_runs_for_mandate(mandate_id)
+    maps_run = next(run for run in runs if "maps" in run.provider.lower())
+    run_apify_google_maps_mock(
+        mandate_id,
+        maps_run.source_run_id,
+        maps_run.query,
+        limit=4,
+    )
+    enrich_companies_without_contacts(mandate_id=mandate_id, limit=4)
+    verify_contacts_mock(mandate_id=mandate_id, limit=10)
+
+    scored = score_all_companies()
+
+    assert get_latest_active_mandate_id() == mandate_id
+    assert len(scored) == 4
+    with db.get_connection() as connection:
+        linked_scores = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM lead_scores
+            JOIN companies ON companies.id = lead_scores.company_id
+            WHERE companies.mandate_id = ?
+            """,
+            (mandate_id,),
+        ).fetchone()["count"]
+        total_scores = connection.execute("SELECT COUNT(*) AS count FROM lead_scores").fetchone()["count"]
+    assert linked_scores == 4
+    assert total_scores > 3

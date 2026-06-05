@@ -349,12 +349,28 @@ def score_companies_for_mandate(mandate_id: str) -> list[LeadScoreBreakdown]:
     return sorted(breakdowns, key=lambda breakdown: breakdown.total_score, reverse=True)
 
 
-def score_all_seed_companies() -> list[LeadScoreBreakdown]:
-    """Score companies using the first local mandate for development testing."""
+def get_latest_active_mandate_id() -> str:
+    """Return the newest active local mandate ID."""
     with get_connection() as connection:
         mandate = connection.execute(
-            "SELECT id FROM mandates ORDER BY created_at, rowid LIMIT 1"
+            """
+            SELECT id
+            FROM mandates
+            WHERE status = 'active'
+            ORDER BY created_at DESC, rowid DESC
+            LIMIT 1
+            """
         ).fetchone()
     if mandate is None:
-        raise ValueError("No local mandate found. Seed or save a mandate first.")
-    return score_companies_for_mandate(str(mandate["id"]))
+        raise ValueError("No active local mandate found. Seed or save a mandate first.")
+    return str(mandate["id"])
+
+
+def score_all_companies() -> list[LeadScoreBreakdown]:
+    """Score companies for the newest active mandate."""
+    return score_companies_for_mandate(get_latest_active_mandate_id())
+
+
+def score_all_seed_companies() -> list[LeadScoreBreakdown]:
+    """Backward-compatible alias for scoring the newest active mandate."""
+    return score_all_companies()

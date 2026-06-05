@@ -9,6 +9,10 @@ from rich.table import Table
 from typer.core import TyperOption
 
 from scripts.config import get_settings
+from scripts.cold_email_copywriting import (
+    get_latest_email_sequence,
+    save_email_sequence_for_mandate,
+)
 from scripts.cost_approval import CostApprovalRequest, process_cost_approval
 from scripts.check_existing_leads import check_existing_leads
 from scripts.db import count_rows, get_connection, get_local_db_path
@@ -20,9 +24,18 @@ from scripts.dedupe_leads import (
 from scripts.icp_builder import build_icp
 from scripts.mandate_intake import parse_mandate
 from scripts.mandate_store import list_mandates, save_mandate
+from scripts.mock_campaign_reporting import generate_mock_campaign_events
 from scripts.mock_email_enrichment import enrich_companies_without_contacts
-from scripts.score_leads import score_all_seed_companies, score_companies_for_mandate
+from scripts.mock_email_verification import verify_contacts_mock
+from scripts.mock_smartlead_deploy import create_mock_smartlead_campaign
+from scripts.production_readiness import get_readiness_items, summarize_readiness
+from scripts.research_best_leads import research_tier_one_leads
+from scripts.score_leads import (
+    get_latest_active_mandate_id,
+    score_companies_for_mandate,
+)
 from scripts.run_apify_google_maps import run_apify_google_maps_mock
+from scripts.dry_pipeline import run_dry_pipeline
 from scripts.source_planner import build_source_plan
 from scripts.source_run_planner import (
     PlannedSourceRun,
@@ -120,6 +133,43 @@ def plan() -> None:
         console.print(f"{index}. {phase}")
 
 
+@app.command("readiness")
+def readiness_command() -> None:
+    """Show SOP production-readiness status without calling providers."""
+    items = get_readiness_items()
+    summary = summarize_readiness(items)
+    console.print("[bold]SOP Production Readiness[/bold]")
+    console.print(
+        "This check is read-only. It does not call providers, spend credits, or send email."
+    )
+    console.print(
+        f"Done: {summary['done']} | Partial: {summary['partial']} | "
+        f"Missing: {summary['missing']} | Blocked: {summary['blocked']}"
+    )
+
+    table = Table(title="Requirement Checklist")
+    table.add_column("Area")
+    table.add_column("Status")
+    table.add_column("Surfaces")
+    table.add_column("Requirement")
+    table.add_column("Next Step")
+    status_colors = {
+        "done": "green",
+        "partial": "yellow",
+        "missing": "red",
+        "blocked": "magenta",
+    }
+    for item in items:
+        table.add_row(
+            item.area,
+            f"[{status_colors[item.status]}]{item.status}[/{status_colors[item.status]}]",
+            ", ".join(item.surfaces),
+            item.requirement,
+            item.next_step,
+        )
+    console.print(table)
+
+
 @app.command("db-status")
 def db_status() -> None:
     """Show local SQLite row counts without connecting to Turso."""
@@ -141,6 +191,7 @@ def db_status() -> None:
         "source_runs",
         "lead_scores",
         "research_logs",
+        "personalization",
         "email_sequences",
         "campaign_leads",
     )
@@ -350,15 +401,14 @@ def existing_check(raw_prompt: str) -> None:
 @app.command("score-leads")
 def score_leads_command(
     mandate_id: str | None = typer.Option(
-        None, is_flag=False, help="Stored mandate ID. Defaults to the first local mandate."
+        None, is_flag=False, help="Stored mandate ID. Defaults to the latest active mandate."
     ),
 ) -> None:
     """Score local companies and persist SOP score breakdowns."""
-    breakdowns = (
-        score_companies_for_mandate(mandate_id)
-        if mandate_id
-        else score_all_seed_companies()
-    )
+    resolved_mandate_id = mandate_id or get_latest_active_mandate_id()
+    breakdowns = score_companies_for_mandate(resolved_mandate_id)
+    console.print(f"[bold]mandate_id[/bold]: {resolved_mandate_id}")
+    console.print(f"[bold]scored_companies[/bold]: {len(breakdowns)}")
     table = Table(title="Lead Scores")
     for column in (
         "Company",
@@ -625,6 +675,257 @@ def mock_enrich_command(
         )
     console.print(table)
     console.print("DRY RUN ONLY: No real enrichment API was called.")
+
+
+@app.command("mock-verify")
+def mock_verify_command(
+    mandate_id: str | None = typer.Option(None, is_flag=False),
+    limit: int = typer.Option(100, is_flag=False),
+) -> None:
+    """Verify synthetic local emails without calling a provider."""
+    results = verify_contacts_mock(mandate_id=mandate_id, limit=limit)
+    table = Table(title="Mock Email Verification")
+    for column in ("Email", "Old Status", "New Status", "Provider", "Reason"):
+        table.add_column(column)
+    for result in results:
+        table.add_row(
+            result.email,
+            result.old_status or "-",
+            result.new_status,
+            result.verification_provider,
+            result.reason,
+        )
+    console.print(table)
+
+    counts = {
+        status: sum(result.new_status == status for result in results)
+        for status in ("valid", "catch_all", "risky", "invalid", "unknown")
+    }
+    console.print("[bold]Verification Summary[/bold]")
+    for status, count in counts.items():
+        console.print(f"{status}: {count}")
+    console.print("DRY RUN ONLY: No real verification API was called.")
+
+
+@app.command("research-tier-one")
+def research_tier_one_command(
+    mandate_id: str | None = typer.Option(None, is_flag=False),
+    limit: int = typer.Option(25, is_flag=False),
+    include_tier_two: bool = typer.Option(
+        False,
+        "--include-tier-two",
+        help="Include Tier 2 companies in the local mock research pass.",
+    ),
+) -> None:
+    """Generate mock research and personalization from local fields only."""
+    results = research_tier_one_leads(
+        mandate_id=mandate_id,
+        limit=limit,
+        include_tier_two=include_tier_two,
+    )
+    table = Table(title="Tier 1 Mock Research")
+    for column in ("Company", "Contact", "Tier", "Score", "Opening Line", "Suggested CTA"):
+        table.add_column(column)
+    for result in results:
+        table.add_row(
+            result.company_name,
+            result.contact_name or "-",
+            result.priority_tier,
+            str(result.fit_score),
+            result.opening_line,
+            result.suggested_cta,
+        )
+    console.print(table)
+    console.print("DRY RUN ONLY: No Claude/API/web research was performed.")
+
+
+@app.command("generate-email-copy")
+def generate_email_copy_command(mandate_id: str) -> None:
+    """Generate and save a local draft cold-email sequence."""
+    save_email_sequence_for_mandate(mandate_id)
+    sequence = get_latest_email_sequence(mandate_id)
+    if sequence is None:
+        console.print("[red]Email sequence was not saved.[/red]")
+        raise typer.Exit(code=1)
+    fields = (
+        ("Campaign Name", "campaign_name"),
+        ("Subject A", "subject_a"),
+        ("Subject B", "subject_b"),
+        ("Email 1", "email_1"),
+        ("Email 2", "email_2"),
+        ("Email 3", "email_3"),
+        ("Unsubscribe Line", "unsubscribe_line"),
+        ("Compliance Notes", "compliance_notes"),
+    )
+    table = Table(title="Draft Cold Email Sequence")
+    table.add_column("Field")
+    table.add_column("Value")
+    for label, field in fields:
+        table.add_row(label, str(sequence[field]))
+    console.print(table)
+    console.print("DRY RUN ONLY: No Claude API or Smartlead API was called.")
+
+
+@app.command("email-sequences")
+def email_sequences_command(
+    mandate_id: str | None = typer.Option(None, is_flag=False),
+) -> None:
+    """List locally saved draft email sequences."""
+    query = """
+        SELECT
+            email_sequences.*,
+            campaigns.campaign_name,
+            campaigns.mandate_id
+        FROM email_sequences
+        JOIN campaigns ON campaigns.id = email_sequences.campaign_id
+    """
+    parameters: tuple[str, ...] = ()
+    if mandate_id:
+        query += " WHERE campaigns.mandate_id = ?"
+        parameters = (mandate_id,)
+    query += " ORDER BY email_sequences.created_at DESC, email_sequences.rowid DESC"
+    with get_connection() as connection:
+        sequences = [
+            dict(row) for row in connection.execute(query, parameters).fetchall()
+        ]
+    table = Table(title="Saved Email Sequences")
+    for column in ("Sequence ID", "Campaign ID", "Campaign Name", "Subject A", "Created At"):
+        table.add_column(column)
+    for sequence in sequences:
+        table.add_row(
+            sequence["id"][:8],
+            sequence["campaign_id"][:8],
+            sequence["campaign_name"],
+            sequence["subject_a"],
+            sequence["created_at"],
+        )
+    console.print(table)
+
+
+@app.command("mock-smartlead-deploy")
+def mock_smartlead_deploy_command(
+    mandate_id: str,
+    limit: int = typer.Option(100, is_flag=False),
+) -> None:
+    """Mock-upload valid approved contacts to a paused local Smartlead campaign."""
+    result = create_mock_smartlead_campaign(mandate_id, limit=limit)
+    table = Table(title="Mock Smartlead Deploy")
+    table.add_column("Field")
+    table.add_column("Value")
+    for field in (
+        "campaign_name",
+        "smartlead_campaign_id",
+        "campaign_status",
+        "leads_selected",
+        "leads_uploaded",
+        "sequence_attached",
+    ):
+        table.add_row(field, str(getattr(result, field)))
+    console.print(table)
+    console.print("DRY RUN ONLY: No real Smartlead campaign was created or launched.")
+
+
+@app.command("campaign-leads")
+def campaign_leads_command(
+    mandate_id: str | None = typer.Option(None, is_flag=False),
+) -> None:
+    """List locally mock-uploaded campaign leads."""
+    query = """
+        SELECT
+            campaign_leads.*,
+            contacts.email,
+            companies.company_name
+        FROM campaign_leads
+        JOIN campaigns ON campaigns.id = campaign_leads.campaign_id
+        JOIN contacts ON contacts.id = campaign_leads.contact_id
+        JOIN companies ON companies.id = contacts.company_id
+    """
+    parameters: tuple[str, ...] = ()
+    if mandate_id:
+        query += " WHERE campaigns.mandate_id = ?"
+        parameters = (mandate_id,)
+    query += " ORDER BY campaign_leads.created_at DESC, campaign_leads.rowid DESC"
+    with get_connection() as connection:
+        leads = [dict(row) for row in connection.execute(query, parameters).fetchall()]
+
+    table = Table(title="Campaign Leads")
+    for column in ("Campaign", "Contact Email", "Company", "Upload", "Approval"):
+        table.add_column(column)
+    for lead in leads:
+        table.add_row(
+            lead["campaign_id"][:8],
+            lead["email"],
+            lead["company_name"],
+            lead["upload_status"],
+            lead["approval_status"],
+        )
+    console.print(table)
+
+
+@app.command("mock-campaign-report")
+def mock_campaign_report_command(campaign_id: str) -> None:
+    """Generate deterministic mock campaign reporting events."""
+    summary = generate_mock_campaign_events(campaign_id)
+    table = Table(title="Mock Campaign Report")
+    table.add_column("Field")
+    table.add_column("Value")
+    for field, value in summary.model_dump().items():
+        table.add_row(field, str(value))
+    console.print(table)
+    console.print("DRY RUN ONLY: No real Smartlead reporting sync was performed.")
+
+
+@app.command("campaigns")
+def campaigns_command() -> None:
+    """List local campaign records."""
+    with get_connection() as connection:
+        campaigns = [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT *
+                FROM campaigns
+                ORDER BY created_at DESC, rowid DESC
+                """
+            ).fetchall()
+        ]
+    table = Table(title="Campaigns")
+    for column in (
+        "Campaign",
+        "Mandate",
+        "Campaign Name",
+        "Smartlead ID",
+        "Status",
+        "Created At",
+    ):
+        table.add_column(column)
+    for campaign in campaigns:
+        table.add_row(
+            campaign["id"][:8],
+            campaign["mandate_id"][:8],
+            campaign["campaign_name"],
+            campaign["smartlead_campaign_id"] or "-",
+            campaign["campaign_status"],
+            campaign["created_at"],
+        )
+    console.print(table)
+
+
+@app.command("run-dry-pipeline")
+def run_dry_pipeline_command(
+    raw_prompt: str,
+    limit: int = typer.Option(25, is_flag=False),
+    reset_db: bool = typer.Option(False, "--reset-db", help="Reset and seed local SQLite first."),
+) -> None:
+    """Run the full local mock SOP pipeline without manual copy/paste IDs."""
+    summary = run_dry_pipeline(raw_prompt, limit=limit, reset_db=reset_db)
+    table = Table(title="Full Dry-Run Pipeline Summary")
+    table.add_column("Field")
+    table.add_column("Value")
+    for field, value in summary.model_dump().items():
+        table.add_row(field, str(value))
+    console.print(table)
+    console.print("DRY RUN ONLY: No external APIs were called and no campaign was launched.")
 
 
 @app.callback()
